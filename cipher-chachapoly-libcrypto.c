@@ -41,20 +41,27 @@ struct chachapoly_ctx {
 
 struct chachathread {
 	u_char *dest;
-	u_char *src;
+	const u_char *src;
 	u_int len;
 	u_int aadlen;
-	u_int curpos;
-	pthread_t tid;
 	u_char *seqbuf;
 	struct chachapoly_ctx *ctx;
 	int response;
 } chachathread;
 
-int total = 0;
-int joined = 0;
-
-pthread_mutex_t lock;
+void *chachapoly_thread_work(void *thread) {
+	struct chachathread *localthread = (struct chachathread *)thread;
+	fprintf(stderr, "Made thread!\n");
+	if (!EVP_CipherInit(localthread->ctx->main_evp, NULL, NULL, localthread->seqbuf, 1)) {
+		localthread->response = SSH_ERR_LIBCRYPTO_ERROR;
+		return 0;
+	}
+	if (EVP_Cipher(localthread->ctx->main_evp, localthread->dest + localthread->aadlen, localthread->src + localthread->aadlen, localthread->len) < 0) {
+		localthread->response = SSH_ERR_LIBCRYPTO_ERROR;
+		return 0;
+	}
+	return 0;
+}
 
 struct chachapoly_ctx *
 chachapoly_new(const u_char *key, u_int keylen)
@@ -90,27 +97,6 @@ chachapoly_free(struct chachapoly_ctx *cpctx)
 	freezero(cpctx, sizeof(*cpctx));
 }
 
-/* threaded function */
-void *chachapoly_thread_work(void *thread) {
-	//total++;
-	struct chachathread *localthread = (struct chachathread *)thread;
-	int ret = 0;
-	int val = 0;
-	fprintf(stderr, "Made thread!\n");
-	pthread_mutex_lock(&lock);
-	val = EVP_Cipher(localthread->ctx->main_evp, localthread->dest + localthread->aadlen + localthread->curpos, localthread->src + localthread->aadlen, localthread->len);
-	pthread_mutex_unlock(&lock);
-	if (val < 0) {
-		fprintf(stderr, "Fail cipher\n");
-		localthread->response = SSH_ERR_LIBCRYPTO_ERROR;
-		ret = SSH_ERR_LIBCRYPTO_ERROR;
-	}
-	free((void *)localthread->src);
-	fprintf(stderr, "Leaving %lu\n", pthread_self());		
-	pthread_exit(&ret);
-	return NULL;
-}
-
 /*
  * chachapoly_crypt() operates as following:
  * En/decrypt with header key 'aadlen' bytes from 'src', storing result
@@ -128,7 +114,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 	int r = SSH_ERR_INTERNAL_ERROR;
 	u_char expected_tag[POLY1305_TAGLEN], poly_key[POLY1305_KEYLEN];
 	struct chachathread thread[4];
-	pthread_mutex_init(&lock, NULL);
+	pthread_t threadlist[4];
 	
 	/*
 	 * Run ChaCha20 once to generate the Poly1305 key. The IV is the
@@ -164,148 +150,57 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 		}
 	}
 
-	fprintf(stderr, "1: len = %d, aadlen = %d seqnr= %d\n", len, aadlen, seqnr);
+	//fprintf(stderr, "1: len = %d, aadlen = %d seqnr= %d\n", len, aadlen, seqnr);
 	
-	/* max len of the inbound data is 32k. first pass break any len > 8192 into
-	   chunks and submit each chunk to a new thread.
-	   Determining the block number (for the counter)
-	   blocks seem to be 64 bytes (512 bits). So if we move
-	   8192 bytes into the keystream we should have to increase the block
-	   counter by 128 (8192/64) so ctrnum1 = 1, ctrnum2=129, ctrnum3 = 257,
-	   ctrnum4 = 385. Right now I have a dumb way of doing it. Note: seqbuf is a 
-	   16 byte char array that is used to hold 2 64 byte values. Think of it as
-	   2 8 byte registers. You need to roll over each register as it hits 255. */
-	   
-	/* the next chunk of code is where all the magic happens in terms of the crypto
-	   cipher init sets things up at the specific block counter
-	   EVP_Cipher actually runs the code.
-	   the chachathread struct holds the data passed to the thread 
-	   for reference: 
-	   struct chachathread {
-	     u_char *dest;
-	     const u_char *src;
-	     u_int len;
-	     u_int aadlen;
-	     u_int srcaadlen;
-	     u_int curpos;
-	     u_char *seqbuf;
-	     struct chachapoly_ctx *ctx;
-	     int response;
-	   } chachathread;*/
-	
-	/* 
-	   basic premise. You have an inbound 'src' and an outbound 'dest'
-	   src has the enclear data and dest holds the crypto data. Take the 
-	   src data and break it down into chunks and process each of those chunk 
-	   in parallel. The resulting crypto'd chunk can then just be slotted into 
-	   dest at the appropriate byte location. 
-	 */
+	// max len is 32k. first pass break any len > 8192 into
+	// chunks and submit each chunk to a new thread.
+	// the difficult part is determining the block number.
+	// blocks seem to be 64 bytes (512 bits). So if we move
+	// 8192 bytes into the keystream we should have to increase the block
+	// counter by 128 (8192/64) so seqnum1 = 1, seqnum2=129, seqnum3 = 257,
+	// seqnum4 = 385. The right way to determine the correct block counter is
+	// to take the pointer position divide by 64 and add 1. 
 
-	u_int chunk = 8196; // 8k +1 bytes
-	// this chunk size is based on the maximum length passed which is
-	// 32784 bytes. Thats 32k +4 bytes. The 4 bytes are the aad 
+	// the next chunk of code is where all the magic happens in terms of the crypto
+	// cipher init sets things up at the specific block counter
+	// EVP_Cipher actually runs the code.
+	// so I'll need to create struct to hold the arguments being passed
+	// and put these lines of code in a threadfunction I can call
 
-	if (len >= chunk) { /* if the length of the inbound datagram is less than */
-		            /* the chunk size don't bother with threading. */ 
-		//char *srcblk[4];
-		fprintf(stderr,"1: len is > chunk\n");
+/* struct chachathread { */
+/* 	u_char *dest; */
+/* 	u_char *src; */
+/* 	u_int len; */
+/* 	u_int aadlen; */
+/* 	u_char *seqbuf; */
+/* 	struct chachapoly_ctx *ctx; */
+/* } chachathread; */
 
-		u_int bufptr = 0; // track where we are in the buffer
-		int i = 0; // iterator
-		int k = 0; // holds max iterator value
-		seqbuf[0] = 1; // set the cc20 sequence counter to 1
-		// we only need to initialize once.
-		if (!EVP_CipherInit(ctx->main_evp, NULL, NULL, seqbuf, 1)) {
-			r = SSH_ERR_LIBCRYPTO_ERROR;
+	u_int chunk = 8192;
+	int bufptr = 0;
+	int i = 0;
+	int k = 0;
+	char *dstblk[4];
+	char *srcblk[4];
+	//foo
+	if (len > chunk) {
+		/* Set Chacha's block counter to 1 */
+		seqbuf[0] = 1;
+
+		// fill the struct for the thread
+		thread[0].dest = dest;
+		thread[0].src = src;
+		thread[0].len = len;
+		thread[0].aadlen = aadlen;
+		thread[0].seqbuf = seqbuf;
+		thread[0].ctx = ctx;
+		thread[0].response = 0;
+		
+		pthread_create(&threadlist[0], NULL, chachapoly_thread_work, (void *)&thread);
+		pthread_join(threadlist[0], NULL);
+		if (thread[0].response == SSH_ERR_LIBCRYPTO_ERROR)
 			goto out;
-		}
-		while (bufptr < len) {
-			fprintf(stderr,"2: bufptr < len\n");
-
-			fprintf(stderr, "aad: %d Len: %d, Buffptr: %d, Chunk: %d Diff: %d\n", aadlen, len, bufptr, chunk, (len-bufptr));
-			if ((len - bufptr) >= chunk) {
-				fprintf(stderr,"3: len-buftr > chunk\n");
-				thread[i].src = malloc(chunk);
-				memcpy(thread[i].src, src+bufptr, chunk);
-				fprintf(stderr, "bufptr is %d of %d diff %d\n", bufptr, len, (len - bufptr));
-				thread[i].curpos = bufptr;
-				thread[i].len = chunk;
-				bufptr += chunk;
-			} else {
-				fprintf(stderr,"4: len - bufptr < chunk\n");
-				thread[i].src = malloc(len-bufptr);
-				memcpy(thread[i].src, src+bufptr, (len-bufptr));
-				fprintf(stderr,"bufptr1 is %d of %d diff %d\n", bufptr, len, (len - bufptr));
-				thread[i].curpos = bufptr;
-				thread[i].len = len-bufptr;
-				bufptr = len;
-			}
-			if (bufptr == len) {
-				fprintf(stderr, "bfptr and len match\n");
-			}
-			i++;
-			k = i;
-			fprintf(stderr,"5: leaving chunking \n");
-
-		}
-		for (i = 0; i < k; i++) {
-			fprintf(stderr,"6: building structs\n");
-
-			// not the right way to do this but
-			// we use this to set the chacha counter to the correct
-			// value based on how many 512bit blocks we are passing.
-			// this assumes we are using 8196 byte chunks.
-			if (i == 0) {
-				seqbuf[0] = 1; // is this correct? 
-			}
-			if (i == 1) {
-				seqbuf[0] = 127;
-			}
-			if (i == 2) {
-				seqbuf[0] = 255;
-				seqbuf[1] = 1;
-			}
-			if (i == 3) {
-				seqbuf[0] = 255;
-				seqbuf[1] = 127;
-			}
-			//for (int j = 0; j < 16; j++) {
-			//	fprintf(stderr, "%d: seqbuf[%d] = %d\n", i, j, seqbuf[j]);
-			//}
-					
-			//fprintf(stderr, "i is %d, len is %d, srcblk[%d] is %d\n", i, len, i, thread[i].len);
-			
-			//fill the struct for the thread
-			thread[i].dest = dest; // this is the u_char dest var passed into this function
-			thread[i].aadlen = aadlen;
-			thread[i].seqbuf = seqbuf;
-			thread[i].ctx = ctx;
-			thread[i].response = 0;
-			//fprintf (stderr, "creating thread %lu\n", threadlist[i]);
-			//pthread_create(&thread[i].tid, NULL, chachapoly_thread_work, (void *)&thread[i]);
-			total++;
-		}
-
-		for (i=0; i < k; i++) {
-			// moved from prior loop as a test. 
-			pthread_create(&thread[i].tid, NULL, chachapoly_thread_work, (void *)&thread[i]);
-
-			fprintf(stderr,"%d of %d %lu MADE\n", i, k, thread[i].tid);
-			if (pthread_kill(thread[i].tid, 0) != 0)
-				fprintf(stderr,"pthread_join failure: Invalid thread id %lu in %s", thread[i].tid, __FUNCTION__);
-			else {
-				debug ("Joining %lu", thread[i].tid);
-				pthread_join(thread[i].tid, NULL);
-				joined++;
-			}
-			fprintf(stderr,"%d of %d %lu JOIN\n", i, k, thread[i].tid);
-			//if (thread[i].response == SSH_ERR_LIBCRYPTO_ERROR) {
-			//	fprintf(stderr,"Whoops!\n");
-			//	goto out;
-			//}
-			fprintf(stderr, "Exiting join loop\ntotal: %d joined %d\n", total, joined);
-		}
-	} else { /*non threaded cc20 method*/
+	} else {
 		/* Set Chacha's block counter to 1 */
 		seqbuf[0] = 1;
 		if (!EVP_CipherInit(ctx->main_evp, NULL, NULL, seqbuf, 1) ||
@@ -314,8 +209,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 			goto out;
 		}
 	}
-	fprintf(stderr, "Exiting chunk loop\n");
-
+	
 	/* If encrypting, calculate and append tag */
 	if (do_encrypt) {
 		poly1305_auth(dest + aadlen + len, dest, aadlen + len,
@@ -326,7 +220,6 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 	explicit_bzero(expected_tag, sizeof(expected_tag));
 	explicit_bzero(seqbuf, sizeof(seqbuf));
 	explicit_bzero(poly_key, sizeof(poly_key));
-	fprintf(stderr, "Exiting function loop\n");	
 	return r;
 }
 
