@@ -115,7 +115,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 	u_char expected_tag[POLY1305_TAGLEN], poly_key[POLY1305_KEYLEN];
 	struct chachathread thread[4];
 	pthread_t threadlist[4];
-	
+
 	/*
 	 * Run ChaCha20 once to generate the Poly1305 key. The IV is the
 	 * packet sequence number.
@@ -151,7 +151,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 	}
 
 	//fprintf(stderr, "1: len = %d, aadlen = %d seqnr= %d\n", len, aadlen, seqnr);
-	
+
 	// max len is 32k. first pass break any len > 8192 into
 	// chunks and submit each chunk to a new thread.
 	// the difficult part is determining the block number.
@@ -159,7 +159,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 	// 8192 bytes into the keystream we should have to increase the block
 	// counter by 128 (8192/64) so seqnum1 = 1, seqnum2=129, seqnum3 = 257,
 	// seqnum4 = 385. The right way to determine the correct block counter is
-	// to take the pointer position divide by 64 and add 1. 
+	// to take the pointer position divide by 64 and add 1.
 
 	// the next chunk of code is where all the magic happens in terms of the crypto
 	// cipher init sets things up at the specific block counter
@@ -187,6 +187,10 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 		/* Set Chacha's block counter to 1 */
 		seqbuf[0] = 1;
 
+                // chunk out the src into multiples of 8192 bytes
+                // put each chunk into a single thread struct
+                // dispatch the thread using pthread_create()
+
 		// fill the struct for the thread
 		thread[0].dest = dest;
 		thread[0].src = src;
@@ -195,9 +199,16 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 		thread[0].seqbuf = seqbuf;
 		thread[0].ctx = ctx;
 		thread[0].response = 0;
-		
+
 		pthread_create(&threadlist[0], NULL, chachapoly_thread_work, (void *)&thread);
+
+                // wait for all of the threads to terminate
+                // requires an invocation of pthread_join per chunk
 		pthread_join(threadlist[0], NULL);
+
+                // since we chunked the data into the thread struct
+                // we now need to copy it back out to dest
+
 		if (thread[0].response == SSH_ERR_LIBCRYPTO_ERROR)
 			goto out;
 	} else {
@@ -209,7 +220,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 			goto out;
 		}
 	}
-	
+
 	/* If encrypting, calculate and append tag */
 	if (do_encrypt) {
 		poly1305_auth(dest + aadlen + len, dest, aadlen + len,
