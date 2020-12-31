@@ -67,17 +67,23 @@ u_int bytecount = 0;
 pthread_mutex_t lock;
 pthread_cond_t cond;
 
-static void myinit(void) {
+static void
+myinit(void)
+{
 	cryptolock = CRYPTO_THREAD_lock_new();
 }
 
-static int mylock(void) {
+static int
+mylock(void)
+{
 	if (!CRYPTO_THREAD_run_once(&once, *myinit) || cryptolock == NULL)
 		return 0;
 	return CRYPTO_THREAD_write_lock(cryptolock);
 }
 
-static int myunlock(void) {
+static int
+myunlock(void)
+{
 	return CRYPTO_THREAD_unlock(cryptolock);
 }
 
@@ -116,8 +122,9 @@ chachapoly_free(struct chachapoly_ctx *cpctx)
 }
 
 /* threaded function */
-void *chachapoly_thread_work(void *thread) {
-	//total++;
+void *
+chachapoly_thread_work(void *thread)
+{
 	struct chachathread *localthread = (struct chachathread *)thread;
 	int ret = 0;
 	int val = 0;
@@ -130,14 +137,14 @@ void *chachapoly_thread_work(void *thread) {
 	} else {
 		fprintf (stderr, "FAILED TO GET CRYPTO LOCK\n");
 	}
-			
+
 	if (val < 0) {
 		fprintf(stderr, "Fail cipher\n");
 		localthread->response = SSH_ERR_LIBCRYPTO_ERROR;
 		ret = SSH_ERR_LIBCRYPTO_ERROR;
 	}
 	//free((void *)localthread->src);
-	fprintf(stderr, "Leaving %lu\n", pthread_self());		
+	fprintf(stderr, "Leaving %lu\n", pthread_self());
 	//pthread_exit(&ret);
 	return NULL;
 }
@@ -156,6 +163,7 @@ int
 chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
     const u_char *src, u_int len, u_int aadlen, u_int authlen, int do_encrypt)
 {
+	fprintf(stderr, "In chachapoly_crypt(): len is %d\n", len);
 	u_char seqbuf[16]; /* layout: u64 counter || u64 seqno */
 	int r = SSH_ERR_INTERNAL_ERROR;
 	u_char expected_tag[POLY1305_TAGLEN], poly_key[POLY1305_KEYLEN];
@@ -237,10 +245,10 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 
 	u_int chunk = 8196; // 8k bytes
 	// this chunk size is based on the maximum length passed which is
-	// 32784 bytes. Thats 32k +4 bytes. The 4 bytes are the aad 
+	// 32784 bytes. Thats 32k +4 bytes. The 4 bytes are the aad
 
 	if (len >= chunk) { /* if the length of the inbound datagram is less than */
-		            /* the chunk size don't bother with threading. */ 
+		            /* the chunk size don't bother with threading. */
 		//char *srcblk[4];
 		fprintf(stderr,"1: len is > chunk\n");
 
@@ -257,7 +265,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 			myunlock();
 		} else {
 			fprintf(stderr,"COULD NOT GET LOCK\n");
-		}			
+		}
 		while (bufptr < len) {
 			fprintf(stderr,"2: bufptr < len\n");
 
@@ -293,7 +301,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 			}
 		for (i = 0; i < k; i++) {
 			fprintf(stderr,"6: building structs\n");
-			if (thread[i].curpos == 0) 
+			if (thread[i].curpos == 0)
 				seqbuf[0] = 1;
 			else
 				POKE_U64_LITTLE(seqbuf, thread[i].curpos/64);
@@ -309,9 +317,9 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 			/* } else { */
 			/* 	fprintf(stderr, "FAILED TO GET LOCK"); */
 			/* } */
-					
+
 			//fprintf(stderr, "i is %d, len is %d, srcblk[%d] is %d\n", i, len, i, thread[i].len);
-			
+
 			//fill the struct for the thread
 			thread[i].dest = malloc(thread[i].len);
 			thread[i].aadlen = aadlen;
@@ -324,7 +332,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 
 		for (i=0; i < k; i++) {
 			fprintf(stderr, "Threadcount is %d\n", threadcount);
-			// moved from prior loop as a test. 
+			// moved from prior loop as a test.
 			//pthread_create(&thread[i].tid, NULL, chachapoly_thread_work, (void *)&thread[i]);
 
 			fprintf(stderr,"%d of %d %lu MADE\n", i, k, thread[i].tid);
@@ -350,16 +358,16 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 		}
 		threadcount = 0;
 		bytecount = 0;
-		
+
 		for (i = 0; i < k; i++) {
 			fprintf(stderr, "Index: %d, startpos: %d, length: %d\n", thread[i].index, thread[i].startpos, thread[i].len);
 			pthread_mutex_lock(&lock);
 			memcpy (dest+aadlen+(thread[i].startpos), thread[i].dest, thread[i].len);
 			pthread_mutex_unlock(&lock);
 			free(thread[i].src);
-			free(thread[i].dest);			
+			free(thread[i].dest);
 		}
-		
+
 	} else { /*non threaded cc20 method*/
 		findent(stderr, 2, LVL_INDENT);
 		fprintf(stderr, ".02: len %d too small for threading\n", len);
@@ -372,11 +380,11 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 		    goto out;
             }
 	}
-	
+
         findent(stderr, 1, LVL_INDENT);
 	fprintf(stderr, "02: Exiting chunk loop\n");
         fflush(stderr);
-	
+
 	/* If encrypting, calculate and append tag */
 	if (do_encrypt) {
             poly1305_auth(dest + aadlen + len, dest, aadlen + len,
