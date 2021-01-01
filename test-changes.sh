@@ -39,7 +39,7 @@ for attempt in $(seq 1 "${attempts}"); do
     targethost=$(echo "${targetloc}" | cut -d: -f 1)
     targetdir=$(echo "${targetloc}" | cut -d: -f 2)
     ./ssh "${targethost}" touch "${targetdir}"/"${uuid}"-"${ts_epoch}"-"${attempt}".txt
-    ./scp -S ./ssh -vvv "${srcloc}"/"${filename}" "${targetloc}"/"${uuid}"-"${ts_epoch}"-"${filename}" > /tmp/"${uuid}"-"${ts_epoch}"-debug.txt 2>&1-
+    ./scp -S ./ssh -vvv "${srcloc}"/"${filename}" "${targetloc}"/"${uuid}"-"${ts_epoch}"-"${filename}" &> /tmp/"${uuid}"-"${ts_epoch}"-debug.txt
 done
 
 # rm -f ~/ssh.c ./debug.txt && make && ./scp -S ./ssh ssh.c localhost:. > debug.txt 2>& 1 && diff ./ssh.c $HOME/ssh.c && shasum -a 256 ./ssh.c ~/ssh.c

@@ -86,7 +86,7 @@ int
 chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
     const u_char *src, u_int len, u_int aadlen, u_int authlen, int do_encrypt)
 {
-	fprintf(stderr, "In chachapoly_crypt(): len is %d\n", len);
+	debug3("In chachapoly_crypt(): len is %d\n", len);
 	u_char seqbuf[16]; /* layout: u64 counter || u64 seqno */
 	int r = SSH_ERR_INTERNAL_ERROR;
 	u_char expected_tag[POLY1305_TAGLEN], poly_key[POLY1305_KEYLEN];
